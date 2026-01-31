@@ -194,6 +194,8 @@
         let gameState = 'WAITING';
         let cameraOffset = 0;
         let nextSpawnTime = 0;
+        let resultTimer = 0;
+        let currentSlopeAngle = 0;
 
         function resize() {
             canvas.width = window.innerWidth;
@@ -224,16 +226,19 @@
         window.addEventListener('orientationchange', () => setTimeout(resize, 300));
         resize();
 
-        function getCurrentSlope() {
-            if (currentLevel === 1 || score < SLOPE_START_SCORE) return 0;
-            return MAX_SLOPE_ANGLE * Math.min((score - SLOPE_START_SCORE) / 2500, 1);
+        function updateSlope() {
+            if (currentLevel === 1 || score < SLOPE_START_SCORE) {
+                currentSlopeAngle += (0 - currentSlopeAngle) * 0.05;
+            } else {
+                const target = MAX_SLOPE_ANGLE * Math.min((score - SLOPE_START_SCORE) / 2500, 1);
+                currentSlopeAngle += (target - currentSlopeAngle) * 0.05;
+            }
         }
 
         function getGroundY(x) {
             const baseLine = canvas.height - (canvas.height * GROUND_RATIO);
-            const slope = getCurrentSlope();
-            if (slope === 0) return baseLine;
-            return baseLine - (canvas.width - x) * Math.tan(slope);
+            if (currentSlopeAngle === 0) return baseLine;
+            return baseLine - (canvas.width - x) * Math.tan(currentSlopeAngle);
         }
 
         imageInput.addEventListener('change', (e) => {
@@ -249,7 +254,7 @@
         });
 
         function triggerStartSequence() {
-            uiPanel.classList.add('hidden-ui'); // 画像選択直後にパネルを隠す
+            uiPanel.classList.add('hidden-ui');
             cutInOverlay.style.display = 'flex';
             playSound('cutin');
             setTimeout(() => { cutInOverlay.style.display = 'none'; startGame(); }, 1200);
@@ -257,12 +262,14 @@
 
         function startGame() {
             gameState = 'PLAYING'; 
-            uiPanel.classList.add('hidden-ui'); // ゲーム開始時に確実にボタンを消す
+            uiPanel.classList.add('hidden-ui'); 
             score = 0; enemies = []; coins = []; particles = [];
             goalItem = null; frameCount = 0; nextSpawnTime = 0; cameraOffset = 0;
             totalCoinsSpawned = 0; totalCoinsCollected = 0;
+            currentSlopeAngle = 0;
             player.y = getGroundY(player.x) - player.height;
             player.vy = 0; player.isJumping = false;
+            resultTimer = 0;
             updateLevelUI();
         }
 
@@ -275,7 +282,10 @@
             if (e && e.cancelable) e.preventDefault();
             isPressing = true;
             if (gameState === 'GAMEOVER' || gameState === 'CLEARING') {
-                currentLevel = 1; startGame(); return;
+                if (resultTimer > 60) {
+                    currentLevel = 1; startGame(); 
+                }
+                return;
             }
             if (gameState === 'PLAYING') {
                 const gy = getGroundY(player.x) - player.height;
@@ -299,14 +309,21 @@
         }
 
         function update() {
+            if (gameState === 'GAMEOVER' || gameState === 'CLEARING') {
+                resultTimer++;
+                return;
+            }
             if (gameState !== 'PLAYING') return;
+
             frameCount++; score += 2;
             scoreDisplay.textContent = `SCORE: ${Math.floor(score / 10)}`;
             const scrollSpeed = (canvas.width * BASE_SCROLL_RATIO) + (score / 4500);
 
+            updateSlope();
+
             if (currentLevel === 2) {
-                const targetOffset = (canvas.width - player.x) * Math.tan(getCurrentSlope()) * 0.75;
-                cameraOffset += (targetOffset - cameraOffset) * 0.1;
+                const targetOffset = (canvas.width - player.x) * Math.tan(currentSlopeAngle) * 0.75;
+                cameraOffset += (targetOffset - cameraOffset) * 0.08;
             }
 
             if (isPressing && player.isJumping) {
@@ -331,16 +348,24 @@
             if (frameCount % 60 === 0 && !goalItem) {
                 const sx = canvas.width + 100;
                 const isBonus = Math.random() > 0.9;
-                coins.push({ x: sx, y: getGroundY(sx) - 100 - Math.random()*120, w: 30, h: 30, type: isBonus?'BONUS':'NORMAL' });
+                const relY = -70 - Math.random()*60; 
+                coins.push({ x: sx, relY: relY, w: 34, h: 34, type: isBonus?'BONUS':'NORMAL' });
                 totalCoinsSpawned++;
             }
 
             for(let i=coins.length-1; i>=0; i--) {
                 let c = coins[i]; c.x -= scrollSpeed;
-                if (Math.abs(player.x + player.width/2 - (c.x + c.w/2)) < 45 && Math.abs(player.y + player.height/2 - (c.y + c.h/2)) < 45) {
+                const actualY = getGroundY(c.x) + c.relY;
+                const playerCX = player.x + player.width/2;
+                const playerCY = player.y + player.height/2;
+                const coinCX = c.x + c.w/2;
+                const coinCY = actualY + c.h/2;
+                const dist = Math.sqrt((playerCX - coinCX)**2 + (playerCY - coinCY)**2);
+
+                if (dist < 55) {
                     score += (c.type === 'BONUS' ? 1000 : 300); totalCoinsCollected++; 
                     playSound(c.type === 'BONUS' ? 'bonus' : 'coin');
-                    spawnParticle(c.x, c.y, c.type === 'BONUS' ? '#60a5fa' : '#fbbf24');
+                    spawnParticle(c.x, actualY, c.type === 'BONUS' ? '#60a5fa' : '#fbbf24');
                     coins.splice(i, 1); continue;
                 }
                 if (c.x < -100) coins.splice(i, 1);
@@ -356,14 +381,30 @@
                 goalItem.x -= scrollSpeed * 0.85;
                 if (player.x > goalItem.x + 150) {
                     if (currentLevel === 1) { currentLevel = 2; startGame(); }
-                    else { finalScore = Math.floor(score/10); gameState = 'CLEARING'; uiPanel.classList.remove('hidden-ui'); }
+                    else { 
+                        finalScore = Math.floor(score/10); 
+                        gameState = 'CLEARING'; 
+                        uiPanel.classList.remove('hidden-ui'); 
+                        resultTimer = 0;
+                    }
                 }
             } else if (frameCount > nextSpawnTime) {
                 const r = Math.random();
-                if (r > 0.85) enemies.push({ x: canvas.width + 100, type: 'BIRD', w: 45, h: 35, speed: scrollSpeed * 1.1, ph: Math.random()*10 });
-                else if (r > 0.7 && currentLevel === 2) enemies.push({ x: canvas.width + 100, type: 'STUDENT', w: 40, h: 70, speed: scrollSpeed * 0.8, ph: Math.random()*10 });
-                else if (r > 0.55 && currentLevel === 2) enemies.push({ x: canvas.width + 100, type: 'TRASH', w: 35, h: 35, speed: scrollSpeed * 1.2, rot: 0 });
-                else enemies.push({ x: canvas.width + 100, type: 'CONE', w: 40, h: 50, speed: scrollSpeed });
+                // ステージ2ではゴミが連なってくる確率
+                if (r > 0.85) {
+                    enemies.push({ x: canvas.width + 100, type: 'BIRD', w: 45, h: 35, speed: scrollSpeed * 1.1, ph: Math.random()*10 });
+                } else if (r > 0.7 && currentLevel === 2) {
+                    enemies.push({ x: canvas.width + 100, type: 'STUDENT', w: 40, h: 70, speed: scrollSpeed * 0.8, ph: Math.random()*10 });
+                } else if (r > 0.5 && currentLevel === 2) {
+                    // ゴミ（TRASH）を連ねて出現
+                    const chainCount = Math.floor(Math.random() * 2) + 2; // 2〜3個
+                    for(let i=0; i<chainCount; i++) {
+                        enemies.push({ x: canvas.width + 100 + (i * 60), type: 'TRASH', w: 35, h: 35, speed: scrollSpeed * 1.2, rot: 0 });
+                    }
+                } else {
+                    const coneH = 40 + Math.random() * 35;
+                    enemies.push({ x: canvas.width + 100, type: 'CONE', w: 40, h: coneH, speed: scrollSpeed });
+                }
                 nextSpawnTime = frameCount + 60 + Math.random() * 50;
             }
 
@@ -374,12 +415,25 @@
                 else if (e.type === 'STUDENT') ey = getGroundY(e.x) - e.h + Math.abs(Math.sin(frameCount * 0.2 + e.ph)) * 10;
                 else { ey = getGroundY(e.x) - e.h; if(e.type === 'TRASH') e.rot += 0.3; }
 
-                const pInset = 30;
+                const pInset = 25;
                 if (player.x + pInset < e.x + e.w && player.x + player.width - pInset > e.x && player.y + pInset < ey + e.h && player.y + player.height - pInset > ey) {
-                    gameState = 'GAMEOVER'; playSound('gameover'); uiPanel.classList.remove('hidden-ui');
+                    gameState = 'GAMEOVER'; 
+                    playSound('gameover'); 
+                    uiPanel.classList.remove('hidden-ui');
+                    resultTimer = 0;
                 }
                 if (e.x < -500) enemies.splice(i, 1);
             }
+        }
+
+        function drawCoin(x, y, size, type) {
+            const colorMain = type === 'BONUS' ? '#60a5fa' : '#fbbf24';
+            const colorDark = type === 'BONUS' ? '#2563eb' : '#d97706';
+            ctx.save(); ctx.translate(x, y);
+            ctx.fillStyle = colorDark; ctx.beginPath(); ctx.arc(0, 0, size/2, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = colorMain; ctx.beginPath(); ctx.arc(0, 0, size/2 - 3, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = colorDark; ctx.font = `bold ${size * 0.6}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('¥', 0, 1);
+            ctx.restore();
         }
 
         function draw() {
@@ -420,18 +474,19 @@
                     ctx.fillStyle = 'white'; ctx.fillRect(50, -170, goalItem.w-100, 40);
                     ctx.fillStyle = '#1d4ed8'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center';
                     ctx.fillText('興戸駅', goalItem.w/2, -142);
+                    ctx.fillStyle = '#475569'; ctx.fillRect(10, -180, 15, 180); ctx.fillRect(goalItem.w-25, -180, 15, 180);
                 } else {
                     ctx.fillStyle = '#7f1d1d'; ctx.fillRect(0, -220, goalItem.w, 220);
                     ctx.fillStyle = '#fef3c7'; ctx.font = 'bold 28px serif'; ctx.textAlign = 'center';
                     ctx.fillText('同志社大学', goalItem.w/2, -110);
+                    ctx.strokeStyle = '#fef3c7'; ctx.lineWidth = 4; ctx.strokeRect(10, -210, goalItem.w-20, 200);
                 }
                 ctx.restore();
             }
 
             coins.forEach(c => {
-                ctx.fillStyle = c.type === 'BONUS' ? '#60a5fa' : '#fbbf24';
-                ctx.beginPath(); ctx.arc(c.x, c.y, c.w/2, 0, Math.PI*2); ctx.fill();
-                ctx.strokeStyle = 'white'; ctx.lineWidth = 2; ctx.stroke();
+                const drawY = getGroundY(c.x) + c.relY;
+                drawCoin(c.x + c.w/2, drawY + c.h/2, c.w, c.type);
             });
 
             particles.forEach(p => {
@@ -445,7 +500,6 @@
                 if (e.type === 'BIRD') ey = getGroundY(e.x) - 180 + Math.sin(frameCount * 0.15 + e.ph) * 35;
                 else if (e.type === 'STUDENT') ey = getGroundY(e.x) - e.h + Math.abs(Math.sin(frameCount * 0.2 + e.ph)) * 10;
                 else ey = getGroundY(e.x) - e.h;
-                
                 ctx.translate(e.x + e.w/2, ey + e.h/2);
                 if (e.type === 'BIRD') {
                     ctx.fillStyle = '#1e293b'; const wing = Math.sin(frameCount * 0.4 + e.ph) * 15;
@@ -457,50 +511,88 @@
                     ctx.rotate(e.rot); ctx.fillStyle = '#94a3b8'; ctx.fillRect(-e.w/2, -e.h/2, e.w, e.h);
                 } else {
                     ctx.fillStyle = '#f97316'; ctx.beginPath(); ctx.moveTo(-e.w/2, e.h/2); ctx.lineTo(0, -e.h/2); ctx.lineTo(e.w/2, e.h/2); ctx.fill();
-                    ctx.fillStyle = 'white'; ctx.fillRect(-e.w/2+8, e.h/2-10, e.w-16, 4);
+                    ctx.fillStyle = 'white'; ctx.fillRect(-e.w/2 + 8, e.h/4 - 2, e.w - 16, 4); ctx.fillRect(-e.w/2 + 4, e.h/2 - 10, e.w - 8, 4);
                 }
                 ctx.restore();
             });
 
-            // Player (Correct direction - facing right)
+            // Player
             ctx.save();
             const py = player.y + player.height/2 + (player.vy === 0 ? player.bobbing : 0);
             ctx.translate(player.x + player.width/2, py);
             ctx.scale(1/player.scaleY, player.scaleY);
             ctx.scale(-1, 1);
-            if (player.img) {
-                ctx.drawImage(player.img, -player.width/2, -player.height/2 - 10, player.width, player.height);
-            } else {
-                ctx.strokeStyle = 'white'; ctx.lineWidth = 3; ctx.strokeRect(-player.width/2, -player.height/2, player.width, player.height);
-            }
+            if (player.img) { ctx.drawImage(player.img, -player.width/2, -player.height/2 - 10, player.width, player.height); }
+            else { ctx.strokeStyle = 'white'; ctx.lineWidth = 3; ctx.strokeRect(-player.width/2, -player.height/2, player.width, player.height); }
             ctx.restore();
             ctx.restore(); 
 
-            // Result Rendering
-            const isWide = canvas.width > 500;
-            if (gameState === 'GAMEOVER') {
-                ctx.fillStyle = 'rgba(0,0,0,0.8)'; ctx.fillRect(0,0,canvas.width,canvas.height);
-                ctx.fillStyle = '#ef4444'; ctx.textAlign = 'center'; ctx.font = 'bold 36px sans-serif';
-                ctx.fillText('遅刻確定...！', canvas.width/2, canvas.height/2);
-                ctx.fillStyle = 'white'; ctx.font = '16px sans-serif';
-                ctx.fillText('画面をタップしてリベンジ', canvas.width/2, canvas.height/2 + 40);
-            } else if (gameState === 'CLEARING') {
-                ctx.fillStyle = 'rgba(15, 23, 42, 0.95)'; ctx.fillRect(0,0,canvas.width,canvas.height);
-                ctx.fillStyle = '#4ade80'; ctx.textAlign = 'center'; ctx.font = 'bold 32px sans-serif';
-                ctx.fillText('無事に間に合った！', canvas.width/2, canvas.height * 0.25);
-                
-                const ratio = totalCoinsSpawned > 0 ? totalCoinsCollected / totalCoinsSpawned : 0;
-                let rank = ratio > 0.85 ? 'S' : ratio > 0.6 ? 'A' : ratio > 0.3 ? 'B' : 'C';
-                let rankColor = rank === 'S' ? '#fbbf24' : rank === 'A' ? '#f87171' : '#60a5fa';
-                
-                ctx.fillStyle = 'white'; ctx.font = 'bold 20px monospace';
-                ctx.fillText(`SCORE: ${finalScore}`, canvas.width/2, canvas.height * 0.4);
-                
-                ctx.fillStyle = rankColor; ctx.font = `bold ${isWide ? 100 : 70}px sans-serif`;
-                ctx.fillText(rank, canvas.width/2, canvas.height * 0.7);
-                
-                ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = '14px sans-serif';
-                ctx.fillText('タップしてもう一度登校', canvas.width/2, canvas.height * 0.9);
+            // Result UI
+            if (gameState === 'GAMEOVER' || gameState === 'CLEARING') {
+                const alpha = Math.min(resultTimer / 30, 0.85);
+                ctx.fillStyle = `rgba(15, 23, 42, ${alpha})`;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                const centerX = canvas.width / 2;
+                const isWin = gameState === 'CLEARING';
+
+                const titleScale = Math.max(1, 1.5 - resultTimer / 20);
+                ctx.save();
+                ctx.translate(centerX, canvas.height * 0.15); 
+                if (resultTimer < 20) ctx.scale(titleScale, titleScale);
+                ctx.shadowBlur = 15; ctx.shadowColor = isWin ? '#4ade80' : '#ef4444';
+                ctx.fillStyle = isWin ? '#4ade80' : '#ef4444';
+                ctx.textAlign = 'center'; ctx.font = 'bold 36px sans-serif';
+                ctx.fillText(isWin ? '1限に間に合った！' : '1限に遅刻した...', 0, 0);
+                ctx.restore();
+
+                if (resultTimer > 20) {
+                    // スコア表示
+                    ctx.fillStyle = 'white';
+                    ctx.font = 'bold 24px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`TOTAL SCORE: ${isWin ? finalScore : Math.floor(score/10)}`, centerX, canvas.height * 0.28);
+                    
+                    // コイン表示を少し上に
+                    const coinRatio = totalCoinsSpawned > 0 ? totalCoinsCollected / totalCoinsSpawned : 0;
+                    ctx.font = '16px sans-serif';
+                    ctx.fillStyle = '#94a3b8';
+                    ctx.fillText(`COINS: ${totalCoinsCollected} / ${totalCoinsSpawned} (${Math.floor(coinRatio*100)}%)`, centerX, canvas.height * 0.35);
+
+                    if (resultTimer > 40 && isWin) {
+                        const rankAlpha = Math.min((resultTimer - 40) / 20, 1);
+                        const rankPop = Math.max(1, 2.0 - (resultTimer - 40) / 10);
+                        let rank = coinRatio > 0.85 ? 'S' : coinRatio > 0.6 ? 'A' : coinRatio > 0.3 ? 'B' : 'C';
+                        let rankColor = rank === 'S' ? '#fbbf24' : rank === 'A' ? '#f87171' : '#60a5fa';
+
+                        ctx.save();
+                        // ランク表示全体の中心を少し下げることで上のテキストとの重なりを回避
+                        ctx.translate(centerX, canvas.height * 0.72); 
+                        if (resultTimer < 55) ctx.scale(rankPop, rankPop);
+                        ctx.globalAlpha = rankAlpha;
+                        
+                        // "RANK"ラベルを文字と被らない位置に固定
+                        ctx.font = 'bold 28px sans-serif';
+                        ctx.shadowBlur = 0;
+                        ctx.fillStyle = 'white';
+                        ctx.fillText('RANK', 0, -145); 
+
+                        // アルファベット表示
+                        ctx.shadowBlur = 40;
+                        ctx.shadowColor = rankColor;
+                        ctx.fillStyle = rankColor;
+                        ctx.font = '900 180px sans-serif'; 
+                        ctx.textAlign = 'center';
+                        ctx.fillText(rank, 0, 10); // 微調整
+                        ctx.restore();
+                    }
+
+                    if (resultTimer > 60) {
+                        ctx.fillStyle = 'rgba(255,255,255,0.8)';
+                        ctx.font = 'bold 18px sans-serif';
+                        ctx.fillText(isWin ? 'タップしてもう一度登校する' : 'タップしてリベンジ！', centerX, canvas.height * 0.94);
+                    }
+                }
             }
         }
 
